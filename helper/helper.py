@@ -4,6 +4,7 @@ import numpy as np
 from timeit import default_timer as timer
 from sklearn.base import BaseEstimator
 from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import maxabs_scale
 from abc import abstractmethod
 from collections import defaultdict
@@ -321,14 +322,14 @@ class RetriEvalMixin():
 
     def evaluate(self, X, Y, k=20, verbose=0, replacement=0, n_jobs=1):
         """
-            :X: [(qid, str)] query id, query string pairs
-            :Y: pandas dataseries with qid,docid index or [dict]
-            :k: Limit the result for all metrics to this value, the models are also
-            given a hint of how many they should return.
-            :replacement: 0 means that (query, doc) pairs not prevalent in Y will
-            not be considered relevant, None means that those are not considered
-            (skipped).
-            """
+        :X: [(qid, str)] query id, query string pairs
+        :Y: pandas dataseries with qid,docid index or [dict]
+        :k: Limit the result for all metrics to this value, the models are also
+        given a hint of how many they should return.
+        :replacement: 0 means that (query, doc) pairs not prevalent in Y will
+        not be considered relevant, None means that those are not considered
+        (skipped).
+        """
         # rs = []
 
         # if n_jobs > 1:
@@ -457,3 +458,110 @@ def build_analyzer(tokenizer=None, stop_words=None, lowercase=True):
                                lowercase=lowercase,
                                stop_words=stop_words).build_analyzer()
     return analyzer
+
+
+class CombinatorMixin(object):
+    """ Creates a computational tree with retrieval models as leafs
+    """
+    def __get_weights(self, other):
+        if not isinstance(other, CombinatorMixin):
+            raise ValueError("other is not Combinable")
+
+        if hasattr(self, '__weight'):
+            weight = self.__weight
+        else:
+            weight = 1.0
+
+        if hasattr(other, '__weight'):
+            otherweight = other.__weight
+        else:
+            otherweight = 1.0
+
+        return weight, otherweight
+
+    # This is evil since it can exceed [0,1], rescaling at the end would be not
+    # that beautiful
+    def __add__(self, other):
+        weights = self.__get_weights(other)
+        return Combined([self, other], weights=weights, aggregation_fn='sum')
+
+    def __mul__(self, other):
+        weights = self.__get_weights(other)
+        return Combined([self, other], weights=weights, aggregation_fn='product')
+
+    def __pow__(self, scalar):
+        self.__weight = scalar
+        return self
+
+
+class Combined(BaseEstimator, CombinatorMixin):
+    def __init__(self, retrieval_models, weights=None, aggregation_fn='sum'):
+        self.retrieval_models = retrieval_models
+        self.aggregation_fn = aggregation_fn
+        if weights is not None:
+            self.weights = weights
+        else:
+            self.weights = [1.0] * len(retrieval_models)
+        assert len(self.retrieval_models) == len(self.weights)
+
+    def fit(self, *args, **kwargs):
+        for model in self.retrieval_models:
+            model.fit(*args, **kwargs)
+        return self
+
+    def query(self, query, k=None, indices=None, sort=True, return_scores=False):
+        models = self.retrieval_models
+        weights = maxabs_scale(self.weights)  # max 1 does not crash [0,1]
+        agg_fn = self.aggregation_fn
+        # It's important that all retrieval model return the same number of documents.
+        all_scores = [m.query(query, k=k, indices=indices, sort=False, return_scores=True)[1] for m in models]
+
+        if weights is not None:
+            all_scores = [weight * scores for weight, scores in zip(all_scores, weights)]
+
+        scores = np.vstack(all_scores)
+        if callable(agg_fn):
+            aggregated_scores = agg_fn(scores)
+        else:
+            numpy_fn = getattr(np, agg_fn)
+            aggregated_scores = numpy_fn(scores, axis=0)
+
+        # combined = aggregate_dicts(combined, agg_fn=agg_fn, sort=True)
+
+        # only cut-off at k if this is the final (sorted) output
+        ind = argtopk(aggregated_scores, k) if sort else np.arange(aggregated_scores.shape[0])
+        if return_scores:
+            return ind, aggregated_scores[ind]
+        else:
+            return ind
+
+class EmbeddedVectorizer(TfidfVectorizer):
+
+    """Embedding-aware vectorizer"""
+
+    def __init__(self, embedding, **kwargs):
+        """TODO: to be defined1. """
+        # list of words in the embedding
+        if not hasattr(embedding, 'index2word'):
+            raise ValueError("No `index2word` attribute found."
+                             " Supply the word vectors (`.wv`) instead.")
+        if not hasattr(embedding, 'vectors'):
+            raise ValueError("No `vectors` attribute found."
+                             " Supply the word vectors (`.wv`) instead.")
+        vocabulary = embedding.index2word
+        self.embedding = embedding
+        print("Embedding shape:", embedding.vectors.shape)
+        TfidfVectorizer.__init__(self, vocabulary=vocabulary, **kwargs)
+
+    def fit(self, raw_docs, y=None):
+        super().fit(raw_docs)
+        return self
+
+    def transform(self, raw_documents, y=None):
+        Xt = super().transform(raw_documents)
+        syn0 = self.embedding.vectors
+        # Xt is sparse counts
+        return (Xt @ syn0)
+
+    def fit_transform(self, X, y=None):
+        return self.fit(X, y).transform(X, y)

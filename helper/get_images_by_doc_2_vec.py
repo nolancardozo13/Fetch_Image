@@ -185,5 +185,5 @@ def get_top_n_images(model, query, n=10):
         d2v = Doc2VecInference(model, DEFAULT_ANALYZER)
         match_op = Matching()
         retrieval = Retrieval(d2v, matching=match_op).fit(documents)
-        result = retrieval.query(query)
+        result = retrieval.query(query, k=n)
         return [images[i] for i in result]
