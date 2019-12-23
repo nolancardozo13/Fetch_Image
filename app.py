@@ -14,6 +14,7 @@ ABSOLUTE_PATH = None
 RETRIEVAL_METHOD = "Doc2Vec"
 IMAGE_SIZE_TO_BE_RETRIEVED = 10
 IMAGE_FOLDER_PATH = None
+PORT = 4555
 
 # initiate the parser
 parser = argparse.ArgumentParser()
@@ -25,6 +26,7 @@ parser.add_argument("--imageFolder",
                     help="Image folder name where the images and captions are stored")
 parser.add_argument("--totalFolderPath",
                     help="Absolute path to the image folder name where the images and captions are stored")
+parser.add_argument("--port", help="Port at which the app should be running")
 
 # read arguments from the command line
 args = parser.parse_args()
@@ -52,6 +54,10 @@ else:
         IMAGE_FOLDER_PATH = os.path.join(APP_ROOT, ABSOLUTE_PATH, IMAGE_FOLDER_NAME)
     else:
         IMAGE_FOLDER_PATH = os.path.join(APP_ROOT, IMAGE_FOLDER_NAME)
+
+if args.port:
+    PORT = args.port
+
 if RETRIEVAL_METHOD == "Doc2Vec":
     model = get_images_by_doc_2_vec.create_doc_to_vector_for_given_images(IMAGE_FOLDER_PATH)
 elif RETRIEVAL_METHOD == "WCD":
@@ -81,4 +87,4 @@ def send_image(filename):
 
 
 if __name__ == "__main__":
-    app.run(port=4555, debug=True)
+    app.run(port=PORT, debug=True)
